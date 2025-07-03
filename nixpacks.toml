@@ -3,6 +3,7 @@ packages = ["ffmpeg", "python3", "python3-pip"]
 
 [phases.build]
 commands = [
+  "pip install --upgrade pip",
   "pip install -r requirements.txt"
 ]
 
