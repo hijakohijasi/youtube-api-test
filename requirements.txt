@@ -1,5 +1,4 @@
 fastapi
-uvicorn
-httpx
-aiofiles
-python-multipart
+uvicorn[standard]
+requests
+ffmpeg-python
