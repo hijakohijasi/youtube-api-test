@@ -1,51 +1,52 @@
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
-import yt_dlp
+from fastapi.responses import FileResponse, JSONResponse
+import httpx
+import os
+
+from utils import download_file, merge_audio_video
 
 app = FastAPI()
+API_URL = "https://youtube-api-production-e07a.up.railway.app/api/video-info"
 
 @app.get("/")
-def home():
-    return {"message": "YouTube Downloader API is running."}
+def root():
+    return {"status": "Sub API working ✅"}
 
-@app.get("/api/video-info")
-def video_info(url: str = Query(..., description="YouTube Video URL")):
-    ydl_opts = {
-        'quiet': True,
-        'skip_download': True,
-        'forcejson': True,
-    }
+@app.get("/process")
+async def process_youtube(url: str = Query(...), format: str = Query("video")):
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{API_URL}?url={url}")
+            data = resp.json()
 
-        audio_only = []
-        video_with_audio = []
+        if not data.get("success"):
+            return JSONResponse({"error": "Failed to fetch from main API"}, status_code=400)
 
-        for f in info['formats']:
-            if not f.get("url") or not f.get("filesize"):
-                continue
+        formats = data["data"]["formats"]
+        title = data["data"]["title"].replace(" ", "_").replace("/", "_")
 
-            entry = {
-                "format_id": f["format_id"],
-                "ext": f["ext"],
-                "filesize_mb": round(f["filesize"] / (1024 * 1024), 2),
-                "format_note": f.get("format_note", ""),
-                "url": f["url"],
-            }
-            if f.get("height"):
-                entry["resolution"] = f"{f['height']}p"
+        if format == "audio":
+            audio_url = formats["audio"]["url"]
+            audio_path = await download_file(audio_url, "webm")
+            final_path = os.path.join("temp", f"{title}.mp3")
 
-            if f.get("vcodec") == "none":
-                audio_only.append(entry)
-            elif f.get("acodec") != "none" and f.get("vcodec") != "none":
-                video_with_audio.append(entry)
+            subprocess.run([
+                "ffmpeg", "-i", audio_path, "-vn", "-ab", "192k", "-ar", "44100",
+                "-y", final_path
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        return JSONResponse({
-            "title": info.get("title"),
-            "id": info.get("id"),
-            "video_with_audio": video_with_audio,
-            "audio_only": audio_only
-        })
+            return FileResponse(final_path, media_type="audio/mpeg", filename=f"{title}.mp3")
+
+        elif format == "video":
+            video_480p = next((v for v in formats["video"] if v["quality_label"] == "480p"), formats["video"][0])
+            video_path = await download_file(video_480p["url"], "mp4")
+            audio_path = await download_file(formats["audio"]["url"], "webm")
+
+            merged_path = merge_audio_video(video_path, audio_path)
+            return FileResponse(merged_path, media_type="video/mp4", filename=f"{title}.mp4")
+
+        else:
+            return JSONResponse({"error": "Invalid format. Use 'audio' or 'video'"}, status_code=400)
+
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse({"error": str(e)}, status_code=500)
